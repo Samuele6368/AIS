@@ -28,7 +28,9 @@ demodBits(idx) = 1;
 prbdet = comm.PreambleDetector('Input','Symbol','Detections','First');
 prbdet.Preamble = (2*[1 0 1 0 1 0 1 0 1 0 1 0 1 0 1 0 1 0 1 0 1 0 1 0]-1).';
 prbdet.Threshold = 20;
-[indx,~] = prbdet(2*demodBits-1);
+% detect preamble (con fix per colonna)
+    demodBits = demodBits(:);
+    [indx,~] = prbdet(2*demodBits-1);
 if(isempty(indx))
     prbdetFlag = 0;
 else

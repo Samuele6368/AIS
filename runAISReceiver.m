@@ -1,10 +1,9 @@
 function radioTime = runAISReceiver(radioTime, userInput, viewer, doCodegen)
 %runAISReceiver AIS receiver main loop
-%   Copyright 2018-2022 The MathWorks, Inc.
 
 persistent aisParam sigSrc sigSrcType mapFlag logFlag
 
-% --- Inizializzazione log (solo al primo frame) --------------------------
+% --- Inizializzazione log e mappa ---
 if isempty(logFlag)
     logFlag = 1;
     if userInput.LogData
@@ -12,7 +11,6 @@ if isempty(logFlag)
     end
 end
 
-% --- Inizializzazione mappa (solo al primo frame) ------------------------
 if isempty(mapFlag)
     mapFlag = 1;
     if userInput.LaunchMap
@@ -21,36 +19,41 @@ if isempty(mapFlag)
     end
 end
 
-% --- Controlla se il file sorgente è cambiato ---------------------------
-fname1 = '';
-fname2 = '';
+fname1 = ''; fname2 = '';
 if ~isempty(sigSrcType) && sigSrcType == ExampleSourceType.Captured
     [~, fname1] = fileparts(userInput.SignalFilename);
     [~, fname2] = fileparts(sigSrc.Filename);
 end
 fileNameChanged = ~strcmp(fname1, fname2);
 
-% --- (Ri)crea gli oggetti se necessario ---------------------------------
+% --- Configurazione Radio e Attesa Boot ---
 if isempty(aisParam) || ...
         userInput.SignalSourceType ~= sigSrcType || ...
         (userInput.SignalSourceType == ExampleSourceType.Captured && fileNameChanged)
+    
     [aisParam, sigSrc] = helperAISConfig(userInput);
     sigSrcType = userInput.SignalSourceType;
+    
+    % --- FIX: ATTESA CARICAMENTO FPGA SUL B205MINI ---
+    if aisParam.isSourceUSRPRadio
+        disp('[SYSTEM] Caricamento FPGA sul B205mini in corso. Attendere 5 secondi...');
+        pause(5); % Diamo all'USRP il tempo materiale di avviare il firmware!
+        disp('[SYSTEM] USRP Avviato. Inizio decodifica...');
+    end
+    % -------------------------------------------------
 end
 
-% --- Ciclo di ricezione -------------------------------------------------
+% --- Ciclo principale di ricezione ---
 if radioTime <= userInput.Duration
-
-    % Acquisisci campioni dalla sorgente
     lostFlag = false;
     try
         if aisParam.isSourceRadio
-            if aisParam.isSourceUSRPRadio            % USRP
+            if aisParam.isSourceUSRPRadio            
                 [rcv, ~, lostFlag] = sigSrc();
-            elseif aisParam.isSourceRTLSDRRadio      % RTL-SDR
+            elseif aisParam.isSourceRTLSDRRadio      
                 [rcv, ~, lost, ~] = sigSrc();
                 lostFlag = logical(lost);
-            elseif aisParam.isSourcePlutoSDRRadio    % ADALM-PLUTO
+            elseif aisParam.isSourcePlutoSDRRadio    
                 [rcv, ~, lostFlag] = sigSrc();
             end
         else
@@ -58,61 +61,51 @@ if radioTime <= userInput.Duration
             lostFlag = false;
         end
     catch me
-        % FIX 1: cattura errori di acquisizione radio (es. timeout USRP,
-        % disconnessione) senza crashare l'intera app.
-        % Mostra l'errore nel viewer e restituisce il radioTime corrente
-        % per fare in modo che il loop principale tenti di continuare.
-        warning('runAISReceiver:acquisitionError', ...
-            'Errore acquisizione radio: %s', me.message);
-        return
-    end
-
-    % FIX 2: forza vettore colonna.
-    % USRP e altri SDR possono restituire vettori riga (1xN).
-    % helperAISRxPhy e tutte le sue funzioni interne assumono (Nx1).
-    % Senza questo, si ottiene "Expected input to be empty, scalar
-    % or a column vector" o errori di concatenazione verticale.
-    % FIX 2: forza vettore colonna e converte il formato del dato
-    % FIX 2: forza vettore colonna e converte il formato del dato
-    rcv = rcv(:);
-    rcv = double(rcv); % <-- Assicura che i dati siano nel formato corretto per il PHY
-    
-    % FIX 3: Evita che i frame vuoti o incompleti (Buffer Underrun) facciano crashare il sistema
-    if isempty(rcv) || length(rcv) ~= aisParam.SamplesPerFrame
-        disp(['[DEBUG] Frame USRP anomalo scartato. Lunghezza ricevuta: ', num2str(length(rcv))]);
+        warning('Errore acquisizione radio: %s', me.message);
         radioTime = radioTime + aisParam.FrameDuration;
-        return; % <-- FIX: Usciamo dalla funzione in anticipo per questo frame
+        return;
     end
 
-    % Decodifica PHY
-    if doCodegen
-        [info, pkt] = helperAISRxPhy_mex(rcv, aisParam);
-    else
-        [info, pkt] = helperAISRxPhy(rcv, aisParam);
+    % --- SCUDO DI PROTEZIONE FRAME (Anti-Popup) ---
+    if ~exist('rcv', 'var') || isempty(rcv) || length(rcv) ~= aisParam.SamplesPerFrame
+        % Se il frame è vuoto o anomalo, lo ignoriamo silenziosamente
+        radioTime = radioTime + aisParam.FrameDuration;
+        return; 
     end
+    
+    % Forza la colonna solo se il frame è integro
+    rcv = double(rcv(:));
+    % ----------------------------------------------
 
-    % Aggiorna il viewer
+    % --- INIZIO TRAPPOLA ERRORI ---
+    % Ci assicuriamo che il formato sia esattamente quello atteso dai filtri ('single')
+    if size(rcv, 2) > 1
+        rcv = rcv(:, 1); % Prende solo il canale 1 se la matrice è anomala
+    end
+    rcv = single(rcv(:)); 
+
+    try
+        if doCodegen
+            [info, pkt] = helperAISRxPhy_mex(rcv, aisParam);
+        else
+            [info, pkt] = helperAISRxPhy(rcv, aisParam);
+        end
+    catch ME
+        disp(' ');
+        disp('!!! CRASH INTERNO TROVATO !!!');
+        disp(getReport(ME, 'extended', 'hyperlinks', 'off'));
+        disp('!!!!!!!!!!!!!!!!!!!!!!!!!!!!!');
+        error('Decodifica fallita. Controlla la Command Window.');
+    end
+    % --- FINE TRAPPOLA ERRORI ---
+
     update(viewer, info, pkt, lostFlag);
     radioTime = radioTime + aisParam.FrameDuration;
-
 else
-    % --- Cleanup finale (chiamata con radioTime > Duration) --------------
-    % FIX 3: controlla che sigSrc esista e sia rilasciabile prima di
-    % chiamare release(), per evitare errori se la sorgente non è mai
-    % stata inizializzata (es. stop premuto prima del primo frame).
+    % Rilascio risorse
     if ~isempty(sigSrc) && isvalid(sigSrc)
-        try
-            release(sigSrc);
-        catch
-            % ignora errori in release (es. oggetto già rilasciato)
-        end
+        try release(sigSrc); catch; end
     end
-
-    % FIX 4: clear esplicito delle variabili persistent.
-    % Necessario per reinizializzare correttamente alla prossima Run.
-    % Nell'originale questo avveniva solo se nargout < 1, ma in modalità
-    % app nargout è sempre 1 (radioTime viene restituito), quindi le
-    % variabili persistent non venivano mai pulite tra una Run e l'altra.
     clear logFlag mapFlag
 end
 end
