@@ -26,7 +26,7 @@ if ~isempty(sigSrcType) && sigSrcType == ExampleSourceType.Captured
 end
 fileNameChanged = ~strcmp(fname1, fname2);
 
-% --- Configurazione Radio e Attesa Boot ---
+% --- Configurazione Radio ---
 if isempty(aisParam) || ...
         userInput.SignalSourceType ~= sigSrcType || ...
         (userInput.SignalSourceType == ExampleSourceType.Captured && fileNameChanged)
@@ -34,13 +34,10 @@ if isempty(aisParam) || ...
     [aisParam, sigSrc] = helperAISConfig(userInput);
     sigSrcType = userInput.SignalSourceType;
     
-    % --- FIX: ATTESA CARICAMENTO FPGA SUL B205MINI ---
     if aisParam.isSourceUSRPRadio
-        disp('[SYSTEM] Caricamento FPGA sul B205mini in corso. Attendere 5 secondi...');
-        pause(5); % Diamo all'USRP il tempo materiale di avviare il firmware!
-        disp('[SYSTEM] USRP Avviato. Inizio decodifica...');
+        disp('[SYSTEM] Configurazione USRP B205mini completata. Avvio...');
+        pause(2); 
     end
-    % -------------------------------------------------
 end
 
 % --- Ciclo principale di ricezione ---
@@ -61,45 +58,52 @@ if radioTime <= userInput.Duration
             lostFlag = false;
         end
     catch me
-        warning('Errore acquisizione radio: %s', me.message);
+        warning('Errore acquisizione: %s', me.message);
         radioTime = radioTime + aisParam.FrameDuration;
         return;
     end
 
-    % --- SCUDO DI PROTEZIONE FRAME (Anti-Popup) ---
-    if ~exist('rcv', 'var') || isempty(rcv) || length(rcv) ~= aisParam.SamplesPerFrame
-        % Se il frame è vuoto o anomalo, lo ignoriamo silenziosamente
+    % --- SCUDO DI PROTEZIONE E FUSIONE I/Q ---
+    if isempty(rcv)
         radioTime = radioTime + aisParam.FrameDuration;
         return; 
     end
     
-    % Forza la colonna solo se il frame è integro
-    rcv = single(rcv(:));
-    % ----------------------------------------------
-
-    % --- INIZIO TRAPPOLA ERRORI ---
-    % Ci assicuriamo che il formato sia esattamente quello atteso dai filtri ('single')
-    if size(rcv, 2) > 1
-        rcv = rcv(:, 1); % Prende solo il canale 1 se la matrice è anomala
+    % --- BLOCCO DI FORZA BRUTA (CHIRURGICO) ---
+    % 1. Trasformiamo in complesso (I+jQ) se necessario
+    rcv_clean = double(rcv); 
+    if size(rcv_clean, 2) == 2
+        rcv_final = complex(rcv_clean(:,1), rcv_clean(:,2));
+    else
+        rcv_final = rcv_clean(:);
     end
-    rcv = single(rcv(:)); 
-
+    
+    % 2. ESTRAZIONE CHIRURGICA:
+    % Invece di passare TUTTO il buffer, ne prendiamo solo una fetta 
+    % che abbia la dimensione esatta attesa dal demodulatore
+    targetLen = aisParam.SamplesPerFrame;
+    
+    % Se abbiamo dati a sufficienza, estraiamo solo il primo blocco utile
+    if length(rcv_final) >= targetLen
+        rcv_chunk = rcv_final(1:targetLen);
+    else
+        rcv_chunk = rcv_final; % Passiamo quello che c'è
+    end
+    
+    % 3. Decodifica "pura" con protezione
     try
         if doCodegen
-            [info, pkt] = helperAISRxPhy_mex(rcv, aisParam);
+            [info, pkt] = helperAISRxPhy_mex(rcv_chunk, aisParam);
         else
-            [info, pkt] = helperAISRxPhy(rcv, aisParam);
+            [info, pkt] = helperAISRxPhy(rcv_chunk, aisParam);
         end
+        update(viewer, info, pkt, lostFlag);
     catch ME
-        disp(' ');
-        disp('!!! CRASH INTERNO TROVATO !!!');
-        disp(getReport(ME, 'extended', 'hyperlinks', 'off'));
-        disp('!!!!!!!!!!!!!!!!!!!!!!!!!!!!!');
-        error('Decodifica fallita. Controlla la Command Window.');
+        % Silenziamo l'errore per non bloccare il loop radio
+        fprintf('Salto frame: %s\n', ME.message);
     end
-    % --- FINE TRAPPOLA ERRORI ---
-
-    update(viewer, info, pkt, lostFlag);
+    % -----------------------------------------
+    
     radioTime = radioTime + aisParam.FrameDuration;
 else
     % Rilascio risorse
