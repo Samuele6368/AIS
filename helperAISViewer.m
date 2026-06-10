@@ -223,9 +223,20 @@ classdef helperAISViewer < handle
                 msgStruct(kk).Longitude = msg.Longitude(kk);
                 msgStruct(kk).Latitude = msg.Latitude(kk);
             end
+            
             updateRadioStatus(obj, lost);
-            updateGUI(obj,msgCnt);
+            
+            % --- INIZIO FIX AGGIORNAMENTO TABELLA ---
+            % 1. PRIMA registriamo i nuovi dati della nave in memoria
             updateShipData(obj, msgStruct, msgCnt);
+            
+            % 2. POI aggiorniamo l'interfaccia grafica
+            updateGUI(obj,msgCnt);
+            
+            % 3. FORZIAMO MATLAB a disegnare subito lo schermo senza aspettare
+            drawnow limitrate; 
+            % --- FINE FIX ---
+            
             if msgCnt > 0
                 if obj.LogData
                     write2File(obj, msgStruct, msgCnt);

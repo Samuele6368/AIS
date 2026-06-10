@@ -86,7 +86,7 @@ switch userInput.SignalSourceType
         % -------------------------------------
 
         sigSrc.DecimationFactor  = sigSrc.MasterClockRate / frontEndSampleRate;
-        sigSrc.Gain              = 30;
+        sigSrc.Gain              = 70;
         sigSrc.CenterFrequency   = userInput.CenterFrequency;
         sigSrc.SamplesPerFrame   = 262144;
         
