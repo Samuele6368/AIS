@@ -14,29 +14,40 @@ prbdet = comm.PreambleDetector('Input','Symbol','Detections','First');
 prbdet.Preamble = (2*[1 0 1 0 1 0 1 0 1 0 1 0 1 0 1 0 1 0 1 0 1 0 1 0]-1).';
 prbdet.Threshold = 20;
 
-% Rilevamento preambolo (formato originale)
-[indx,~] = prbdet(2*demodBits-1);
+% FIX: comm.PreambleDetector richiede tassativamente un vettore colonna.
+% Se demodBits e' un vettore riga (cosa che puo' accadere dopo syncPhase
+% su certi buffer), la chiamata genera "Expected input to be empty,
+% scalar or a column vector". Il (:) risolve il problema in tutti i casi.
+inputVec = (2*demodBits - 1);
+inputVec = inputVec(:);
+
+[indx,~] = prbdet(inputVec);
 
 if(isempty(indx))
-    prbdetFlag = 0;
+  prbdetFlag = 0;
 else
-    prbdetFlag = 1;
+  prbdetFlag = 1;
 end
+
 end
 
 % Synchronization based on angles
 function rxDownsample = syncPhase(rcv,aisParam)
+
 rcvAngles = unwrap(angle(rcv));
 lenCorrWin = 2*length(aisParam.syncAngles);
+
 if (length(rcvAngles) > lenCorrWin)
-    [acor,lag] = xcorr(aisParam.syncAngles,rcvAngles(1:lenCorrWin));
-    [~,I] = max(abs(acor));
-    lagDiff = lag(I);
-    Index = lagDiff;
-    idx = -Index+1;
+  [acor,lag] = xcorr(aisParam.syncAngles, rcvAngles(1:lenCorrWin));
+  [~,I] = max(abs(acor));
+  lagDiff = lag(I);
+  Index = lagDiff;
+  idx = -Index+1;
 else
-    idx = 1;
+  idx = 1;
 end
-samplePhase = mod(idx,aisParam.SamplesPerSymbol)+floor(aisParam.SamplesPerSymbol/2);
+
+samplePhase = mod(idx, aisParam.SamplesPerSymbol) + floor(aisParam.SamplesPerSymbol/2);
 rxDownsample = rcvAngles(samplePhase:aisParam.SamplesPerSymbol:end);
+
 end
