@@ -74,7 +74,7 @@ if radioTime <= userInput.Duration
     end
     
     % Forza la colonna solo se il frame è integro
-    rcv = double(rcv(:));
+    rcv = single(rcv(:));
     % ----------------------------------------------
 
     % --- INIZIO TRAPPOLA ERRORI ---
